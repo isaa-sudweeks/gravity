@@ -76,8 +76,60 @@ def grad_inplace(u, dx, out):
     """
     Compute du/dx into `out` in-place using 4th-order centered differences
     with 4th-order one-sided stencils at the boundaries.
-    Works with NumPy arrays or Torch tensors.
+
+    For Torch tensors (FP32 on GPU), form the integer-weighted numerator first
+    using fused adds (torch.add with alpha) and divide by the common denominator
+    (12*dx) at the end. This reduces intermediate rounding and mirrors a
+    rational-form evaluation.
     """
+    if _is_tensor(u):
+        # Single scalar divide at the end (rational-like evaluation)
+        scale = 1.0 / (12.0 * dx)
+        # Centered stencil: (-1, 8, -8, 1) / (12*dx)
+        s = torch.neg(u[4:])
+        s = torch.add(s, u[3:-1], alpha=8.0)
+        s = torch.add(s, u[1:-3], alpha=-8.0)
+        s = torch.add(s, u[0:-4], alpha=1.0)
+        out[2:-2] = s * scale
+
+        # Left boundary (4th-order one-sided): (-25, 48, -36, 16, -3) / (12*dx)
+        s0 = torch.zeros_like(out[0])
+        s0 = torch.add(s0, u[0],  alpha=-25.0)
+        s0 = torch.add(s0, u[1],  alpha= 48.0)
+        s0 = torch.add(s0, u[2],  alpha=-36.0)
+        s0 = torch.add(s0, u[3],  alpha= 16.0)
+        s0 = torch.add(s0, u[4],  alpha= -3.0)
+        out[0] = s0 * scale
+
+        # Next-left: (-3, -10, 18, -6, 1) / (12*dx)
+        s1 = torch.zeros_like(out[1])
+        s1 = torch.add(s1, u[0],  alpha= -3.0)
+        s1 = torch.add(s1, u[1],  alpha=-10.0)
+        s1 = torch.add(s1, u[2],  alpha= 18.0)
+        s1 = torch.add(s1, u[3],  alpha= -6.0)
+        s1 = torch.add(s1, u[4],  alpha=  1.0)
+        out[1] = s1 * scale
+
+        # Next-right: (-1, 6, -18, 10, 3) / (12*dx) at indices [-2]
+        sm2 = torch.zeros_like(out[-2])
+        sm2 = torch.add(sm2, u[-5], alpha= -1.0)
+        sm2 = torch.add(sm2, u[-4], alpha=  6.0)
+        sm2 = torch.add(sm2, u[-3], alpha=-18.0)
+        sm2 = torch.add(sm2, u[-2], alpha= 10.0)
+        sm2 = torch.add(sm2, u[-1], alpha=  3.0)
+        out[-2] = sm2 * scale
+
+        # Right boundary: (3, -16, 36, -48, 25) / (12*dx)
+        sm1 = torch.zeros_like(out[-1])
+        sm1 = torch.add(sm1, u[-5], alpha=  3.0)
+        sm1 = torch.add(sm1, u[-4], alpha=-16.0)
+        sm1 = torch.add(sm1, u[-3], alpha= 36.0)
+        sm1 = torch.add(sm1, u[-2], alpha=-48.0)
+        sm1 = torch.add(sm1, u[-1], alpha= 25.0)
+        out[-1] = sm1 * scale
+        return
+
+    # NumPy path (unchanged): compute numerator then divide once
     idx_by_12 = 1.0 / (12.0 * dx)
     out[2:-2] = (-u[4:] + 8 * u[3:-1] - 8 * u[1:-3] + u[0:-4]) * idx_by_12
     out[0]  = (-25 * u[0] + 48 * u[1] - 36 * u[2] + 16 * u[3] - 3 * u[4]) * idx_by_12
@@ -159,10 +211,17 @@ def rk2(u, dt, dx, up, k1, tmp):
     nu = len(u)
     rhs(k1, u, dx, tmp)
     for i in range(nu):
-        up[i][:] = u[i][:] + 0.5 * dt * k1[i][:]
+        if _is_tensor(u[i]):
+            # Use fused add with scalar factor for better FP32 accuracy
+            up[i][:] = torch.add(u[i], k1[i], alpha=(0.5 * dt))
+        else:
+            up[i][:] = u[i][:] + 0.5 * dt * k1[i][:]
     rhs(k1, up, dx, tmp)
     for i in range(nu):
-        u[i][:] = u[i][:] + dt * k1[i][:]
+        if _is_tensor(u[i]):
+            u[i][:] = torch.add(u[i], k1[i], alpha=dt)
+        else:
+            u[i][:] = u[i][:] + dt * k1[i][:]
 
 def write_curve(filename, time, x, u_names, u):
     # Convert to NumPy if tensors (for safe text I/O)

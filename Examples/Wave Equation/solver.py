@@ -90,8 +90,74 @@ def l2norm(u):
     """
     return np.sqrt(np.mean(u**2))
 
+def visualize_wave(x, u, width=80, height=20):
+    """
+    Create a simple ASCII visualization of the wave.
+    
+    This function creates a text-based visualization of the wave in the terminal
+    using ASCII characters. It maps the wave amplitude to a grid of characters,
+    with '*' representing the wave. The visualization is scaled to fit within
+    the specified width and height.
+    
+    Parameters:
+    -----------
+    x : array
+        The x coordinates
+    u : array
+        The wave amplitude at each x
+    width : int
+        The width of the visualization in characters
+    height : int
+        The height of the visualization in characters
+    """
+    # Find min and max values for scaling
+    u_min = np.min(u)
+    u_max = np.max(u)
+    
+    # Avoid division by zero
+    if u_max == u_min:
+        u_max = u_min + 1.0
+    
+    # Create a 2D grid for the visualization
+    grid = [[' ' for _ in range(width)] for _ in range(height)]
+    
+    # Fill the grid with the wave
+    for i, val in enumerate(u):
+        # Map x to column
+        col = int((i / len(u)) * width)
+        if col >= width:
+            col = width - 1
+            
+        # Map u to row (invert so higher values are at the top)
+        row = int((1.0 - (val - u_min) / (u_max - u_min)) * (height - 1))
+        if row >= height:
+            row = height - 1
+        if row < 0:
+            row = 0
+            
+        # Place a character at the position
+        grid[row][col] = '*'
+    
+    # Print the visualization
+    print("\nWave Visualization:")
+    print("-" * width)
+    for row in grid:
+        print(''.join(row))
+    print("-" * width)
+    print(f"Min: {u_min:.4f}, Max: {u_max:.4f}")
 
-def main(parfile):
+
+def main(parfile, visualize=False):
+    """
+    Main function to run the wave equation solver.
+    
+    Parameters:
+    -----------
+    parfile : str
+        Path to the parameter file
+    visualize : bool, optional
+        Whether to visualize the wave during simulation (default: False)
+    """
     # Read parameters
     with open(parfile, "rb") as f:
         params = tomllib.load(f)
@@ -114,6 +180,14 @@ def main(parfile):
     iter = 0
     fname = f"data_{iter:04d}.curve"
     write_curve(fname, time, x, u_names, u)
+    
+    # Visualize initial state if requested
+    if visualize:
+        # Display ASCII visualization of both wave components
+        print("\nVisualizing Phi (wave amplitude):")
+        visualize_wave(x, u[0])
+        print("\nVisualizing Pi (wave momentum):")
+        visualize_wave(x, u[1])
 
     freq = params.get("output_frequency", 1)
 
@@ -125,14 +199,36 @@ def main(parfile):
             print(f"Step {i:d}, t={time:.2e}, |Phi|={l2norm(u[0]):.2e}, |Pi|={l2norm(u[1]):.2e}")
             fname = f"data_{i:04d}.curve"
             write_curve(fname, time, x, u_names, u)
+            
+            # Visualize both wave components at this time step if requested
+            if visualize:
+                print("\nVisualizing Phi (wave amplitude):")
+                visualize_wave(x, u[0])
+                print("\nVisualizing Pi (wave momentum):")
+                visualize_wave(x, u[1])
 
     
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("Usage:  python solver.py <parfile>")
+    # Parse command line arguments
+    visualize = False  # Default: no visualization
+    parfile = None
+    
+    # Check for visualization flag and parameter file
+    for arg in sys.argv[1:]:
+        if arg == "-v":
+            # Enable visualization when -v flag is present
+            visualize = True
+        elif not arg.startswith("-"):
+            # Argument without leading dash is treated as parameter file
+            parfile = arg
+    
+    # Ensure a parameter file was provided
+    if parfile is None:
+        print("Usage: python solver.py [-v] <parfile>")
+        print("  -v: visualize the wave simulation")
         sys.exit(1)
-
-    parfile = sys.argv[1]
-    main(parfile)
+        
+    # Run the main function with the parameter file and visualization flag
+    main(parfile, visualize=visualize)

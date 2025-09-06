@@ -1,6 +1,8 @@
 import numpy as np
 import tomllib
 import sys
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
 
 def create_grid(params):
     x_min = params["x_min"]
@@ -43,7 +45,7 @@ def rhs(dtu, u, x):
 
     dtu[0][:] = -dxu[:]
     dtu[0][0] = 0.0
-    
+
 
 def rk2(u, x, dt):
     nu = len(u)
@@ -65,7 +67,7 @@ def rk2(u, x, dt):
         u[i][:] = u[i][:] + dt * k1[i][:]
 
 def write_curve(filename, time, x, u_names, u):
-    with open(filename, "w") as f:
+    with open(filename, "w", encoding="utf-8") as f:
         f.write(f"# TIME {time}\n")
         for m in range(len(u_names)):
             f.write(f"# {u_names[m]}\n")
@@ -78,11 +80,98 @@ def l2norm(u):
     """
     return np.sqrt(np.mean(u**2))
 
+def make_animation(x, frames, times, y_min=None, y_max=None, out_file=None, dt_ms=50):
+    """
+    Build and (optionally) save a Matplotlib animation from stored frames.
 
-def main(parfile):
+    Parameters
+    ----------
+    x : array
+        X coordinates (shared for all frames)
+    frames : list of 1D arrays
+        Sequence of u arrays for each frame
+    times : list of float
+        Simulation times corresponding to frames
+    y_min, y_max : float, optional
+        Fixed y-limits; if None, computed from data
+    out_file : str, optional
+        If provided, attempt to save animation to this file (mp4/gif)
+    dt_ms : int
+        Delay between frames in milliseconds
+    """
+    fig, ax = plt.subplots(figsize=(10, 6))
+    line, = ax.plot([], [], linewidth=2)
+
+    if y_min is None or y_max is None:
+        all_min = min(float(np.min(f)) for f in frames)
+        all_max = max(float(np.max(f)) for f in frames)
+    else:
+        all_min, all_max = y_min, y_max
+
+    # Avoid zero range
+    y_range = max(all_max - all_min, 1e-12)
+    pad = 0.1 * y_range
+    ax.set_xlim(float(np.min(x)), float(np.max(x)))
+    ax.set_ylim(all_min - pad, all_max + pad)
+    ax.set_xlabel('Position (x)')
+    ax.set_ylabel('Amplitude (u)')
+    ax.grid(True)
+
+    def init():
+        line.set_data([], [])
+        ax.set_title('Wave Animation (initializing)')
+        return (line,)
+
+    def update(i):
+        line.set_data(x, frames[i])
+        ax.set_title(f'Wave at t={times[i]:.2e}')
+        return (line,)
+
+    anim = animation.FuncAnimation(
+        fig, update, init_func=init, frames=len(frames), interval=dt_ms, blit=True
+    )
+
+    # Try to save if requested
+    if out_file:
+        try:
+            if out_file.lower().endswith('.mp4'):
+                anim.save(out_file, writer='ffmpeg', dpi=200)
+            elif out_file.lower().endswith('.gif'):
+                anim.save(out_file, writer='pillow', dpi=200)
+            else:
+                # Default to mp4 if extension unrecognized
+                anim.save(out_file + '.mp4', writer='ffmpeg', dpi=200)
+            print(f"Saved animation to {out_file}")
+        except Exception as e:
+            print(f"Could not save to {out_file} ({e}). Trying GIF fallback...")
+            try:
+                fallback = (out_file.rsplit('.', 1)[0] if '.' in out_file else out_file) + '.gif'
+                anim.save(fallback, writer='pillow', dpi=200)
+                print(f"Saved animation to {fallback}")
+            except Exception as e2:
+                print(f"Could not save animation ({e2}). Displaying live instead.")
+
+    return anim, fig, ax
+
+
+def main(parfile, visualize=False):
+    """
+    Main function to run the advection equation solver.
+
+    Parameters:
+    -----------
+    parfile : str
+        Path to the parameter file
+    visualize : bool, optional
+        Whether to create an animation at the end of the simulation (default: False)
+    """
     # Read parameters
-    with open(parfile, "rb") as f:
+    with open(parfile, "r", encoding="utf-8") as f:
         params = tomllib.load(f)
+
+    if visualize:
+        frames = []
+        times = []
 
     # Create the grid and set time step size
     x, dx = create_grid(params)
@@ -95,6 +184,10 @@ def main(parfile):
 
     initial_data(u, x, params)
 
+    if visualize:
+        frames.append(u[0].copy())
+        times.append(0.0)
+
     nt = params["nt"]
     time = 0.0
 
@@ -103,7 +196,7 @@ def main(parfile):
     fname = f"data_{iter:04d}.curve"
     write_curve(fname, time, x, u_names, u)
 
-    # Inegrate in time
+    # Integrate in time
     for i in range(1, nt+1):
         rk2(u, x, dt)
         time += dt
@@ -112,13 +205,41 @@ def main(parfile):
             fname = f"data_{i:04d}.curve"
             write_curve(fname, time, x, u_names, u)
 
-    
+            if visualize:
+                frames.append(u[0].copy())
+                times.append(time)
+
+    if visualize and len(frames) > 1:
+        # Use output_frequency and dt to set a sensible playback speed
+        freq = params.get("output_frequency", 1)
+        dt_ms = max(20, int(1000 * dt * freq))
+        # Attempt to save an MP4; fallback to GIF if ffmpeg is not available
+        out_file = params.get("animation_file", "wave.mp4")
+        _, fig, _ = make_animation(x, frames, times, out_file=out_file, dt_ms=dt_ms)
+        plt.show()
+
+
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("Usage:  python solver.py <parfile>")
-        sys.exit(1)
+    # Parse command line arguments
+    visualize = False  # Default: no visualization
+    parfile = None
 
-    parfile = sys.argv[1]
-    main(parfile)
+    # Check for visualization flag and parameter file
+    for arg in sys.argv[1:]:
+        if arg == "-v":
+            # Enable visualization when -v flag is present
+            visualize = True
+        elif not arg.startswith("-"):
+            # Argument without leading dash is treated as parameter file
+            parfile = arg
+
+    # Ensure a parameter file was provided
+    if parfile is None:
+        print("Usage: python solver.py [-v] <parfile>")
+        print("  -v: generate and display an animation at the end of the simulation")
+        sys.exit(1)
+        
+    # Run the main function with the parameter file and visualization flag
+    main(parfile, visualize=visualize)

@@ -14,7 +14,7 @@ except ModuleNotFoundError:  # pragma: no cover - optional dependency may be abs
 
 NumberLike = Union["Rational", Fraction, numbers.Real]
 
-DEFAULT_MAX_DENOMINATOR = 10**6
+DEFAULT_MAX_DENOMINATOR = 10**15
 
 
 def _coerce_to_fraction(value: Any, *, max_denominator: int) -> Fraction:
@@ -152,6 +152,25 @@ class Rational:
         value = math.exp(float(self))
         return Rational.from_float(value, max_denominator=max_denominator)
 
+    def sqrt(self, *, max_denominator: Optional[int] = None) -> "Rational":
+        """Return the (principal) square root within the available precision."""
+
+        if self._numerator < 0:
+            raise ValueError("square root is undefined for negative Rational values")
+        if max_denominator is None:
+            max_denominator = self._max_denominator
+        if self._numerator == 0:
+            return Rational(0, 1, max_denominator=max_denominator)
+
+        num_sqrt = math.isqrt(self._numerator)
+        den_sqrt = math.isqrt(self._denominator)
+        if num_sqrt * num_sqrt == self._numerator and den_sqrt * den_sqrt == self._denominator:
+            # Preserve exact square roots when both components are perfect squares.
+            return Rational(num_sqrt, den_sqrt, max_denominator=max_denominator)
+
+        approx = math.sqrt(float(self))
+        return Rational.from_float(approx, max_denominator=max_denominator)
+
     # ------------------------------------------------------------------
     # Numeric protocol
     def __float__(self) -> float:  # pragma: no cover - trivial mapping
@@ -172,6 +191,14 @@ class Rational:
         if self._denominator == 1:
             return str(self._numerator)
         return f"{self._numerator}/{self._denominator}"
+
+    def __format__(self, format_spec: str) -> str:  # pragma: no cover - simple delegation
+        if format_spec in ("", "r", "R"):
+            return str(self)
+        try:
+            return format(float(self), format_spec)
+        except (ValueError, TypeError):
+            return format(str(self), format_spec)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -406,6 +433,7 @@ class Rational:
             np.absolute: abs,
             np.power: operator.pow,
             np.exp: lambda a: a.exp(),
+            np.sqrt: lambda a: a.sqrt(),
         }
     else:  # pragma: no cover - executed when NumPy unavailable
         _UFUNC_DISPATCH = {}
@@ -451,4 +479,83 @@ def exp(value: NumberLike, *, max_denominator: Optional[int] = None) -> Rational
     return rational_value.exp(max_denominator=max_denominator)
 
 
-__all__ = ["Rational", "rationalize", "DEFAULT_MAX_DENOMINATOR", "exp"]
+def as_rational_array(
+    values: Any,
+    *,
+    max_denominator: Optional[int] = None,
+    copy: bool = True,
+) -> "np.ndarray":
+    """Return a ``numpy.ndarray`` of :class:`Rational` values.
+
+    ``values`` can be any iterable containing numeric-like entries or an existing
+    NumPy array. When ``copy`` is ``False`` and ``values`` is already a NumPy
+    array with ``dtype=object``, the original array is returned after ensuring
+    each element is a :class:`Rational`.
+    """
+
+    if np is None:
+        raise RuntimeError("NumPy is required to construct Rational arrays")
+
+    if isinstance(values, np.ndarray):
+        if copy:
+            array = values.copy()
+        else:
+            array = values
+        if array.dtype != object:
+            array = array.astype(object, copy=False)
+        if array.dtype == object and all(isinstance(item, Rational) for item in array.flat):
+            return array
+        vectorised = np.vectorize(
+            lambda item: Rational.rationalize(item, max_denominator=max_denominator),
+            otypes=[object],
+        )
+        return vectorised(array)
+
+    if isinstance(values, (list, tuple)):
+        coerced = [
+            Rational.rationalize(item, max_denominator=max_denominator) for item in values
+        ]
+        return np.array(coerced, dtype=object)
+
+    return as_rational_array(list(values), max_denominator=max_denominator, copy=copy)
+
+
+def zeros(
+    length: int,
+    *,
+    max_denominator: Optional[int] = None,
+) -> "np.ndarray":
+    """Return a one-dimensional array of length ``length`` filled with zeros."""
+
+    if length < 0:
+        raise ValueError("length must be non-negative")
+    return as_rational_array(
+        [Rational(0, 1, max_denominator=max_denominator) for _ in range(length)],
+        copy=True,
+    )
+
+
+def zeros_like(
+    values: Any,
+    *,
+    max_denominator: Optional[int] = None,
+    copy: bool = True,
+) -> "np.ndarray":
+    """Return a zero-filled array that matches the shape of ``values``."""
+
+    array = as_rational_array(values, max_denominator=max_denominator, copy=copy)
+    zeros_flat = [
+        Rational(0, 1, max_denominator=max_denominator) for _ in range(array.size)
+    ]
+    return np.array(zeros_flat, dtype=object).reshape(array.shape)
+
+
+__all__ = [
+    "Rational",
+    "rationalize",
+    "DEFAULT_MAX_DENOMINATOR",
+    "exp",
+    "as_rational_array",
+    "zeros",
+    "zeros_like",
+]

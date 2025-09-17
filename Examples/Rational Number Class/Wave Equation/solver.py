@@ -10,10 +10,11 @@ def create_grid(params):
     x_max = x_max.from_float(params["x_max"])
     nx = gr.Rational()
     nx = nx.from_float(params["nx"])
-    dx = (x_max - x_min) / (nx -1)
-    x = [gr.Rational(0, 1) for _ in range(int(nx))]
+    dx = (x_max - x_min) / (nx - 1)
+    x_values = [gr.Rational(0, 1) for _ in range(int(nx))]
     for i in range(int(nx)):
-        x[i] = x_min + i*dx
+        x_values[i] = x_min + i * dx
+    x = gr.as_rational_array(x_values)
     return x, dx
 
 def initial_data(u, x, params):
@@ -24,22 +25,22 @@ def initial_data(u, x, params):
     omega = gr.Rational()
     omega = omega.from_float(float(params.get("id_omega", 1.0)))
     u[0][:] = amp * np.exp(-omega * (x[:] - x0) ** 2)
-    for i in range(len(u[1])):
-        u[1][i] = gr.Rational(0, 1)
+    u[1][:] = gr.zeros_like(u[1])
 
 
 def grad(u, dx):
-    du = [gr.Rational(0, 1) for _ in range(len(u))]
-    idx_by_12 = gr.Rational(1, 12 * float(dx))
+    values = gr.as_rational_array(u, copy=False)
+    du = gr.zeros_like(values)
+    idx_by_12 = gr.Rational(1, 12) / dx
 
     # Center Stencil
-    du[2:-2] = (-u[4:] + 8 * u[3:-1] - 8 * u[1:-3] + u[0:-4]) * idx_by_12
+    du[2:-2] = (-values[4:] + 8 * values[3:-1] - 8 * values[1:-3] + values[0:-4]) * idx_by_12
 
     # 4th order boundary stencils
-    du[0] = (-25 * u[0] + 48 * u[1] - 36 * u[2] + 16 * u[3] - 3 * u[4]) * idx_by_12
-    du[1] = (-3 * u[0] - 10 * u[1] + 18 * u[2] - 6 * u[3] + u[4]) * idx_by_12
-    du[-2] = (-u[-5] + 6 * u[-4] - 18 * u[-3] + 10 * u[-2] + 3 * u[-1]) * idx_by_12
-    du[-1] = (3 * u[-5] - 16 * u[-4] + 36 * u[-3] - 48 * u[-2] + 25 * u[-1]) * idx_by_12
+    du[0] = (-25 * values[0] + 48 * values[1] - 36 * values[2] + 16 * values[3] - 3 * values[4]) * idx_by_12
+    du[1] = (-3 * values[0] - 10 * values[1] + 18 * values[2] - 6 * values[3] + values[4]) * idx_by_12
+    du[-2] = (-values[-5] + 6 * values[-4] - 18 * values[-3] + 10 * values[-2] + 3 * values[-1]) * idx_by_12
+    du[-1] = (3 * values[-5] - 16 * values[-4] + 36 * values[-3] - 48 * values[-2] + 25 * values[-1]) * idx_by_12
     return du
 
 def rhs(dtu, u, x):
@@ -61,17 +62,12 @@ def rhs(dtu, u, x):
 def rk2(u, x, dt):
     nu = len(u)
 
-    up = [gr.Rational(0, 1) for _ in range(nu)]
-    k1 = [gr.Rational(0, 1) for _ in range(nu)]
-    for i in range(nu):
-        ux = [gr.Rational(0, 1) for _ in range(nu)]
-        kx = [gr.Rational(0, 1) for _ in range(nu)]
-        up[i] = ux
-        k1[i] = kx
+    up = [gr.zeros_like(u_field) for u_field in u]
+    k1 = [gr.zeros_like(u_field) for u_field in u]
 
     rhs(k1, u, x)
     for i in range(nu):
-        up[i][:] = u[i][:] + gr.Rational(1,2) * dt * k1[i][:]
+        up[i][:] = u[i][:] + gr.Rational(1, 2) * dt * k1[i][:]
 
     rhs(k1, up, x)
     for i in range(nu):
@@ -96,8 +92,8 @@ def main(parfile, output_path):
     dt = gr.Rational()
     dt = dt.from_float(float(params["cfl"]) * float(dx))
 
-    Phi = [gr.Rational(0, 1) for _ in range(len(x))]
-    Pi = [gr.Rational(0, 1) for _ in range(len(x))]
+    Phi = gr.zeros(len(x))
+    Pi = gr.zeros(len(x))
     u = [Phi, Pi]
     u_names = ["Phi", "Pi"]
 
@@ -109,7 +105,7 @@ def main(parfile, output_path):
 
     iter = 0
     fname = f"{output_path}data_{iter:04d}.curve"
-    write_curve(fname, time, x, u_names, u)
+    write_curve(fname, float(time), np.float64(x), u_names, np.float64(u))
 
     freq = params.get("output_frequency", 1)
 
@@ -119,6 +115,8 @@ def main(parfile, output_path):
         if i % freq == 0:
             print(f"Step {i:d}, t={time}, |Phi|={l2norm(u[0]):.2e}, |Pi|={l2norm(u[1]):.2e}")
             fname = f"{output_path}data_{i:04d}.curve"
+
+            write_curve(fname, float(time), np.float64(x), u_names, np.float64(u))
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:

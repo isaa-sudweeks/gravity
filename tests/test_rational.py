@@ -3,7 +3,14 @@ import unittest
 
 import numpy as np
 
-from gravity import DEFAULT_MAX_DENOMINATOR, Rational, rationalize
+from gravity import (
+    DEFAULT_MAX_DENOMINATOR,
+    Rational,
+    as_rational_array,
+    rationalize,
+    zeros,
+    zeros_like,
+)
 
 
 class RationalTests(unittest.TestCase):
@@ -89,6 +96,27 @@ class RationalTests(unittest.TestCase):
         vector = np.array([Rational(2, 3), Rational(4, 5)], dtype=object)
         result = np.power(vector, 2)
         np.testing.assert_allclose([float(item) for item in result], [4 / 9, 16 / 25])
+
+    def test_rational_array_helpers(self):
+        arr = zeros(4)
+        self.assertEqual(arr.shape, (4,))
+        self.assertTrue(all(isinstance(item, Rational) for item in arr))
+
+        base = [Rational(1, 2), 0.25, 0.75]
+        arr_from_list = as_rational_array(base)
+        self.assertEqual(arr_from_list.shape, (3,))
+        self.assertTrue(all(isinstance(item, Rational) for item in arr_from_list))
+
+        arr_like = zeros_like(arr_from_list)
+        self.assertEqual(arr_like.shape, arr_from_list.shape)
+        self.assertTrue(all(float(item) == 0.0 for item in arr_like))
+
+    def test_formatting_support(self):
+        value = Rational(3, 2)
+        self.assertEqual(f"{value}", "3/2")
+        self.assertEqual(f"{value:.2f}", "1.50")
+        self.assertEqual(f"{value:.2e}", f"{float(value):.2e}")
+        self.assertEqual(f"{value:r}", "3/2")
 
 
 if __name__ == "__main__":  # pragma: no cover - direct execution helper

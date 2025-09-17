@@ -37,6 +37,30 @@ class RationalTests(unittest.TestCase):
         value = Rational(123456, 987654)
         self.assertLessEqual(value.denominator, DEFAULT_MAX_DENOMINATOR)
 
+    def test_constructor_accepts_real_components(self):
+        dx = Rational(1, 3)
+        value = Rational(1, 12 * float(dx))
+        self.assertAlmostEqual(float(value), 1.0 / (12 * float(dx)))
+
+    def test_list_broadcasting_and_numpy_interop(self):
+        vector = [Rational(1, 2), Rational(2, 3)]
+        shifted = Rational(1, 6) + vector
+        self.assertTrue(all(isinstance(item, Rational) for item in shifted))
+        np.testing.assert_allclose([float(item) for item in shifted], [2 / 3, 5 / 6])
+
+        diff = vector - Rational(1, 3)
+        self.assertTrue(all(isinstance(item, Rational) for item in diff))
+        np.testing.assert_allclose([float(item) for item in diff], [1 / 6, 1 / 3])
+
+        omega = Rational(3, 2)
+        x0 = Rational(1, 5)
+        profile = np.exp(-omega * (vector - x0) ** 2)
+        self.assertIsInstance(profile, np.ndarray)
+        np.testing.assert_allclose(
+            [float(item) for item in profile],
+            np.exp(-1.5 * (np.array([0.5, 2 / 3]) - 0.2) ** 2),
+        )
+
     def test_numpy_array_operations_with_scalar(self):
         vector = np.array([0.25, 0.5, 0.75])
         result = Rational(1, 4) + vector

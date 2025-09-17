@@ -17,11 +17,24 @@ NumberLike = Union["Rational", Fraction, numbers.Real]
 DEFAULT_MAX_DENOMINATOR = 10**6
 
 
-def _ensure_int(value: numbers.Real, *, name: str) -> int:
-    """Convert *value* to ``int`` when it represents an integer."""
+def _coerce_to_fraction(value: Any, *, max_denominator: int) -> Fraction:
+    """Convert *value* into a :class:`Fraction` respecting ``max_denominator``."""
+
+    if isinstance(value, Rational):
+        return Fraction(value._numerator, value._denominator)
+    if isinstance(value, Fraction):
+        # Avoid needlessly truncating precise Fractions provided by the caller.
+        return value
     if isinstance(value, numbers.Integral):
-        return int(value)
-    raise TypeError(f"{name} must be an integer, got {type(value)!r}")
+        return Fraction(int(value), 1)
+    if np is not None and isinstance(value, np.generic):  # NumPy scalars
+        return _coerce_to_fraction(value.item(), max_denominator=max_denominator)
+    if isinstance(value, numbers.Real):
+        frac = Fraction.from_float(float(value))
+        if abs(frac.denominator) > max_denominator:
+            frac = frac.limit_denominator(max_denominator)
+        return frac
+    raise TypeError(f"Cannot interpret {type(value)!r} as a rational component")
 
 
 class Rational:
@@ -32,20 +45,24 @@ class Rational:
 
     def __init__(
         self,
-        numerator: Union[int, numbers.Integral] = 0,
-        denominator: Union[int, numbers.Integral] = 1,
+        numerator: NumberLike = 0,
+        denominator: NumberLike = 1,
         *,
         max_denominator: Optional[int] = None,
     ) -> None:
-        num = _ensure_int(numerator, name="numerator")
-        den = _ensure_int(denominator, name="denominator")
-        if den == 0:
-            raise ZeroDivisionError("denominator must be non-zero")
-
         if max_denominator is None:
             max_denominator = DEFAULT_MAX_DENOMINATOR
         if max_denominator < 1:
             raise ValueError("max_denominator must be >= 1")
+
+        num_fraction = _coerce_to_fraction(numerator, max_denominator=max_denominator)
+        den_fraction = _coerce_to_fraction(denominator, max_denominator=max_denominator)
+        if den_fraction == 0:
+            raise ZeroDivisionError("denominator must be non-zero")
+
+        combined = num_fraction / den_fraction
+        num = combined.numerator
+        den = combined.denominator
 
         num, den = self._normalize(num, den, max_denominator)
 
@@ -127,6 +144,14 @@ class Rational:
             max_denominator=max_denominator,
         )
 
+    def exp(self, *, max_denominator: Optional[int] = None) -> "Rational":
+        """Return ``e`` raised to this value as a :class:`Rational` approximation."""
+
+        if max_denominator is None:
+            max_denominator = self._max_denominator
+        value = math.exp(float(self))
+        return Rational.from_float(value, max_denominator=max_denominator)
+
     # ------------------------------------------------------------------
     # Numeric protocol
     def __float__(self) -> float:  # pragma: no cover - trivial mapping
@@ -164,6 +189,14 @@ class Rational:
             return Rational.from_float(float(value), max_denominator=self._max_denominator)
         raise TypeError(f"Cannot interpret {type(value)!r} as Rational")
 
+    def _vectorize_iterable(self, iterable, func):
+        mapped = [func(item) for item in iterable]
+        if np is not None:
+            return np.array(mapped, dtype=object)
+        if isinstance(iterable, tuple):
+            return tuple(mapped)
+        return mapped
+
     def _binary_operation(self, other: Any, op):
         if np is not None and isinstance(other, np.ndarray):
             vectorised = np.vectorize(
@@ -171,6 +204,11 @@ class Rational:
                 otypes=[object],
             )
             return vectorised(other)
+        if isinstance(other, (list, tuple)):
+            return self._vectorize_iterable(
+                other,
+                lambda x: op(self, self._coerce_scalar(x)),
+            )
         other_rat = self._coerce_scalar(other)
         return op(self, other_rat)
 
@@ -239,6 +277,11 @@ class Rational:
                 otypes=[object],
             )
             return vectorised(other)
+        if isinstance(other, (list, tuple)):
+            return self._vectorize_iterable(
+                other,
+                lambda x: self._coerce_scalar(x).__sub__(self),
+            )
         return self._coerce_scalar(other).__sub__(self)
 
     def __mul__(self, other: Any) -> Any:
@@ -275,6 +318,11 @@ class Rational:
                 otypes=[object],
             )
             return vectorised(other)
+        if isinstance(other, (list, tuple)):
+            return self._vectorize_iterable(
+                other,
+                lambda x: self._coerce_scalar(x).__truediv__(self),
+            )
         return self._coerce_scalar(other).__truediv__(self)
 
     def __pow__(self, exponent: Any) -> Any:
@@ -357,6 +405,7 @@ class Rational:
             np.positive: operator.pos,
             np.absolute: abs,
             np.power: operator.pow,
+            np.exp: lambda a: a.exp(),
         }
     else:  # pragma: no cover - executed when NumPy unavailable
         _UFUNC_DISPATCH = {}
@@ -395,4 +444,11 @@ def rationalize(value: NumberLike, *, max_denominator: Optional[int] = None) -> 
     return Rational.rationalize(value, max_denominator=max_denominator)
 
 
-__all__ = ["Rational", "rationalize", "DEFAULT_MAX_DENOMINATOR"]
+def exp(value: NumberLike, *, max_denominator: Optional[int] = None) -> Rational:
+    """Return ``e`` raised to *value* as a :class:`Rational` approximation."""
+
+    rational_value = Rational.rationalize(value, max_denominator=max_denominator)
+    return rational_value.exp(max_denominator=max_denominator)
+
+
+__all__ = ["Rational", "rationalize", "DEFAULT_MAX_DENOMINATOR", "exp"]

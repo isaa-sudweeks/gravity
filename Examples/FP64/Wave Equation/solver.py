@@ -20,21 +20,25 @@ def initial_data(u, x, params):
     u[1][:] = 0.0
 
 def grad(u, dx):
-    du = np.zeros_like(u)
     idx_by_12 = 1.0 / (12 * dx)
 
-    # center stencil
-    du[2:-2] = (-u[4:] + 8 * u[3:-1] - 8 * u[1:-3] + u[0:-4]) * idx_by_12
+    up1 = np.empty_like(u)
+    up1[:-1] = u[1:]
+    up1[-1] = u[0]
 
-    # 4th order boundary stencils
-    du[0] = (-25 * u[0] + 48 * u[1] - 36 * u[2] + 16 * u[3] - 3 * u[4]) * idx_by_12
-    du[1] = (-3 * u[0] - 10 * u[1] + 18 * u[2] - 6 * u[3] + u[4]) * idx_by_12
-    du[-2] = (-u[-5] + 6 * u[-4] - 18 * u[-3] + 10 * u[-2] + 3 * u[-1]) * idx_by_12
-    du[-1] = (
-            3 * u[-5] - 16 * u[-4] + 36 * u[-3] - 48 * u[-2] + 25 * u[-1]
-        ) * idx_by_12
+    up2 = np.empty_like(u)
+    up2[:-2] = u[2:]
+    up2[-2:] = u[:2]
 
-    return du
+    um1 = np.empty_like(u)
+    um1[1:] = u[:-1]
+    um1[0] = u[-1]
+
+    um2 = np.empty_like(u)
+    um2[2:] = u[:-2]
+    um2[:2] = u[-2:]
+
+    return (-up2 + 8 * up1 - 8 * um1 + um2) * idx_by_12
 
 
 def rhs(dtu, u, x):
@@ -47,14 +51,6 @@ def rhs(dtu, u, x):
 
     dtu[0][:] = dxPi[:]
     dtu[1][:] = dxPhi[:]
-
-    # left boundary conditions
-    dtu[0][0] = dxPhi[0]
-    dtu[1][0] = dxPi[0]
-
-    # right boundary conditions
-    dtu[0][-1] = -dxPhi[-1]
-    dtu[1][-1] = -dxPi[-1]
     
 
 def rk2(u, x, dt):

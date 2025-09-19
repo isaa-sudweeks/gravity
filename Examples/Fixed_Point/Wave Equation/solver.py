@@ -90,22 +90,24 @@ def initial_data(u, x, params):
 
 
 def grad(u, idx_by_12):
-    du = np.zeros_like(u, dtype=np.int64)
+    up1 = np.empty_like(u, dtype=np.int64)
+    up1[:-1] = u[1:]
+    up1[-1] = u[0]
 
-    du[2:-2] = fixed_mul(-u[4:] + 8 * u[3:-1] - 8 * u[1:-3] + u[:-4], idx_by_12)
+    up2 = np.empty_like(u, dtype=np.int64)
+    up2[:-2] = u[2:]
+    up2[-2:] = u[:2]
 
-    du[0] = fixed_mul(
-        -25 * u[0] + 48 * u[1] - 36 * u[2] + 16 * u[3] - 3 * u[4], idx_by_12
-    )
-    du[1] = fixed_mul(-3 * u[0] - 10 * u[1] + 18 * u[2] - 6 * u[3] + u[4], idx_by_12)
-    du[-2] = fixed_mul(
-        -u[-5] + 6 * u[-4] - 18 * u[-3] + 10 * u[-2] + 3 * u[-1], idx_by_12
-    )
-    du[-1] = fixed_mul(
-        3 * u[-5] - 16 * u[-4] + 36 * u[-3] - 48 * u[-2] + 25 * u[-1], idx_by_12
-    )
+    um1 = np.empty_like(u, dtype=np.int64)
+    um1[1:] = u[:-1]
+    um1[0] = u[-1]
 
-    return du
+    um2 = np.empty_like(u, dtype=np.int64)
+    um2[2:] = u[:-2]
+    um2[:2] = u[-2:]
+
+    stencil = -up2 + 8 * up1 - 8 * um1 + um2
+    return fixed_mul(stencil, idx_by_12)
 
 
 def rhs(dtu, u, x):
@@ -120,12 +122,6 @@ def rhs(dtu, u, x):
 
     dtu[0][:] = dx_pi
     dtu[1][:] = dx_phi
-
-    dtu[0][0] = dx_phi[0]
-    dtu[1][0] = dx_pi[0]
-
-    dtu[0][-1] = -dx_phi[-1]
-    dtu[1][-1] = -dx_pi[-1]
 
 
 def rk2(u, x, dt):

@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import tomllib
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,7 +23,8 @@ class SolverResult:
     runtime: float
     final_time: float
     variables: Dict[str, Tuple[np.ndarray, np.ndarray]]
-    l2_norms: Dict[str, float]
+    l2_errors: Dict[str, float]
+    linf_errors: Dict[str, float]
 
 
 def resolve_paths(solver: str, parfile: str | None) -> Tuple[Path, Path]:
@@ -80,6 +82,27 @@ def l2_norm(values: np.ndarray) -> float:
     return float(np.sqrt(np.mean(values ** 2)))
 
 
+def linf_norm(values: np.ndarray) -> float:
+    return float(np.max(np.abs(values)))
+
+
+def analytic_wave_solution(x: np.ndarray, time: float, params: Dict[str, float]) -> Dict[str, np.ndarray]:
+    amp = params.get("id_amp", 1.0)
+    omega = params.get("id_omega", 1.0)
+    x0 = params.get("id_x0", 0.5)
+
+    def profile(x_values: np.ndarray) -> np.ndarray:
+        return amp * np.exp(-omega * (x_values - x0) ** 2)
+
+    left_travel = profile(x - time)
+    right_travel = profile(x + time)
+
+    phi = 0.5 * (left_travel + right_travel)
+    pi = 0.5 * (left_travel - right_travel)
+
+    return {"Phi": phi, "Pi": pi}
+
+
 def run_solver(name: str, solver_path: Path, parfile: Path) -> SolverResult:
     with tempfile.TemporaryDirectory(prefix=f"{solver_path.stem}_output_") as tmpdir:
         output_dir = Path(tmpdir)
@@ -105,7 +128,29 @@ def run_solver(name: str, solver_path: Path, parfile: Path) -> SolverResult:
             raise FileNotFoundError(f"No curve files produced by solver {solver_path}")
 
         final_time, variables = parse_curve_file(curve_files[-1])
-        norms = {var: l2_norm(data[1]) for var, data in variables.items()}
+
+        with parfile.open("rb") as pf:
+            params = tomllib.load(pf)
+
+        if not variables:
+            raise ValueError(f"No variables parsed from solver output for {solver_path}")
+
+        reference_x = next(iter(variables.values()))[0]
+        analytic = analytic_wave_solution(reference_x, final_time, params)
+
+        l2_errors: Dict[str, float] = {}
+        linf_errors: Dict[str, float] = {}
+
+        for var, (x_values, data_values) in variables.items():
+            if var not in analytic:
+                continue
+            if len(x_values) != len(reference_x) or not np.allclose(x_values, reference_x):
+                raise ValueError(
+                    f"Variable {var} from {solver_path} has grid mismatch for analytic comparison"
+                )
+            diff = data_values - analytic[var]
+            l2_errors[var] = l2_norm(diff)
+            linf_errors[var] = linf_norm(diff)
 
     return SolverResult(
         name=name,
@@ -114,29 +159,10 @@ def run_solver(name: str, solver_path: Path, parfile: Path) -> SolverResult:
         runtime=runtime,
         final_time=final_time,
         variables=variables,
-        l2_norms=norms,
+        l2_errors=l2_errors,
+        linf_errors=linf_errors,
     )
 
-
-def compare_variables(
-    a: SolverResult, b: SolverResult
-) -> Tuple[Dict[str, float], Dict[str, str]]:
-    shared = set(a.variables) & set(b.variables)
-    differences: Dict[str, float] = {}
-    issues: Dict[str, str] = {}
-
-    for name in sorted(shared):
-        x_a, values_a = a.variables[name]
-        x_b, values_b = b.variables[name]
-        if len(x_a) != len(x_b):
-            issues[name] = "grid length mismatch"
-            continue
-        if not np.allclose(x_a, x_b):
-            issues[name] = "grid values differ"
-            continue
-        differences[name] = l2_norm(values_a - values_b)
-
-    return differences, issues
 
 
 def main() -> None:
@@ -145,42 +171,32 @@ def main() -> None:
     )
     parser.add_argument("solver_a", help="Path to the first solver script")
     parser.add_argument("solver_b", help="Path to the second solver script")
-    parser.add_argument("--parfile-a", dest="parfile_a", help="Override parfile for solver A")
-    parser.add_argument("--parfile-b", dest="parfile_b", help="Override parfile for solver B")
+    parser.add_argument("--parfile", dest="parfile", help="Override parfile for both solvers")
     args = parser.parse_args()
 
-    solver_a_path, parfile_a = resolve_paths(args.solver_a, args.parfile_a)
-    solver_b_path, parfile_b = resolve_paths(args.solver_b, args.parfile_b)
+    solver_a_path, parfile_a = resolve_paths(args.solver_a, args.parfile)
+    solver_b_path, parfile_b = resolve_paths(args.solver_b, args.parfile)
 
     result_a = run_solver("A", solver_a_path, parfile_a)
     result_b = run_solver("B", solver_b_path, parfile_b)
-
-    differences, issues = compare_variables(result_a, result_b)
 
     def report(result: SolverResult) -> None:
         print(f"Solver {result.name}: {result.solver_path}")
         print(f"  Parfile: {result.parfile}")
         print(f"  Runtime: {result.runtime:.3f} s")
         print(f"  Final time: {result.final_time:.6e}")
-        print("  L2 norms:")
-        for var, norm in sorted(result.l2_norms.items()):
-            print(f"    {var}: {norm:.6e}")
+        if result.l2_errors:
+            print("  L2 errors vs analytic:")
+            for var, err in sorted(result.l2_errors.items()):
+                print(f"    {var}: {err:.6e}")
+        if result.linf_errors:
+            print("  Linf errors vs analytic:")
+            for var, err in sorted(result.linf_errors.items()):
+                print(f"    {var}: {err:.6e}")
         print()
 
     report(result_a)
     report(result_b)
-
-    if differences:
-        print("L2 norms of differences (solver A - solver B):")
-        for name, diff in differences.items():
-            print(f"  {name}: {diff:.6e}")
-    else:
-        print("No overlapping variables to compare or incompatible grids.")
-
-    if issues:
-        print("\nComparison issues detected:")
-        for name, message in issues.items():
-            print(f"  {name}: {message}")
 
 
 if __name__ == "__main__":

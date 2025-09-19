@@ -39,7 +39,7 @@ def from_fixed_array(values):
 def fixed_mul(a, b):
     a_arr = _as_int_array(a)
     b_arr = _as_int_array(b)
-    result = (a_arr * b_arr + HALF) >> FRAC_BITS
+    result = (a_arr * b_arr + HALF) >> FRAC_BITS #The addition of the Half Scale unit makes it so that it rounds to the nearest reather than truncating
     if result.shape == ():
         return int(result)
     return result.astype(np.int64)
